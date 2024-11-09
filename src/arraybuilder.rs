@@ -1,7 +1,7 @@
 use arrow::compute::kernels::cast_utils::parse_decimal;
 use arrow::{array as arrow_array, datatypes::Decimal128Type};
 use arrow::datatypes::DataType as ArrowDataType;
-use sqlparser::ast::{Expr, Value};
+use sqlparser::ast::{Expr, UnaryOperator, Value};
 
 
 pub fn append_value_to_builder(builder : &mut Box<dyn arrow_array::ArrayBuilder>, datatype : &ArrowDataType, expr : &Expr) -> anyhow::Result<()> {
@@ -11,34 +11,70 @@ pub fn append_value_to_builder(builder : &mut Box<dyn arrow_array::ArrayBuilder>
         ArrowDataType::Int16 => {
             let b = builder.as_any_mut().downcast_mut::<arrow_array::Int16Builder>().unwrap();
             match expr {
+                Expr::UnaryOp {
+                    op : UnaryOperator::Minus,
+                    expr 
+                } => {
+                    match expr.as_ref() {
+                        Expr::Value(Value::Number(num, _)) => {
+                            let v : i16 = -num.parse()?;
+                            b.append_value(v);
+                        },
+                        _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?} to {:?}", expr, datatype)).into())
+                    }
+                },
                 Expr::Value(Value::Number(num, _)) => {
                     let v : i16 = num.parse()?;
                     b.append_value(v);
                 },
                 Expr::Value(Value::Null) => b.append_null(),
-                _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?}", expr)).into())
+                _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?} to {:?}", expr, datatype)).into())
             }
         },
         ArrowDataType::Int32 => {
             let b = builder.as_any_mut().downcast_mut::<arrow_array::Int32Builder>().unwrap();
             match expr {
+                Expr::UnaryOp {
+                    op : UnaryOperator::Minus,
+                    expr 
+                } => {
+                    match expr.as_ref() {
+                        Expr::Value(Value::Number(num, _)) => {
+                            let v : i32 = -num.parse()?;
+                            b.append_value(v);
+                        },
+                        _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?} to {:?}", expr, datatype)).into())
+                    }
+                },
                 Expr::Value(Value::Number(num, _)) => {
                     let v : i32 = num.parse()?;
                     b.append_value(v);
                 },
                 Expr::Value(Value::Null) => b.append_null(),
-                _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?}", expr)).into())
+                _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?} to {:?}", expr, datatype)).into())
             }
         },
         ArrowDataType::Int64 => {
             let b = builder.as_any_mut().downcast_mut::<arrow_array::Int64Builder>().unwrap();
             match expr {
+                Expr::UnaryOp {
+                    op : UnaryOperator::Minus,
+                    expr 
+                } => {
+                    match expr.as_ref() {
+                        Expr::Value(Value::Number(num, _)) => {
+                            let v : i64 = -num.parse()?;
+                            b.append_value(v);
+                        },
+                        _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?} to {:?}", expr, datatype)).into())
+                    }
+                },
                 Expr::Value(Value::Number(num, _)) => {
                     let v : i64 = num.parse()?;
                     b.append_value(v);
                 },
                 Expr::Value(Value::Null) => b.append_null(),
-                _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?}", expr)).into())
+                _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?} to {:?}", expr, datatype)).into())
             }
         },
         ArrowDataType::UInt16 => {
@@ -49,7 +85,7 @@ pub fn append_value_to_builder(builder : &mut Box<dyn arrow_array::ArrayBuilder>
                     b.append_value(v);
                 },
                 Expr::Value(Value::Null) => b.append_null(),
-                _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?}", expr)).into())
+                _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?} to {:?}", expr, datatype)).into())
             }
         },
         ArrowDataType::UInt32 => {
@@ -60,7 +96,7 @@ pub fn append_value_to_builder(builder : &mut Box<dyn arrow_array::ArrayBuilder>
                     b.append_value(v);
                 },
                 Expr::Value(Value::Null) => b.append_null(),
-                _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?}", expr)).into())
+                _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?} to {:?}", expr, datatype)).into())
             }
         },
         ArrowDataType::UInt64 => {
@@ -71,7 +107,7 @@ pub fn append_value_to_builder(builder : &mut Box<dyn arrow_array::ArrayBuilder>
                     b.append_value(v);
                 },
                 Expr::Value(Value::Null) => b.append_null(),
-                _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?}", expr)).into())
+                _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?} to {:?}", expr, datatype)).into())
             }
         },
 
@@ -79,23 +115,47 @@ pub fn append_value_to_builder(builder : &mut Box<dyn arrow_array::ArrayBuilder>
         ArrowDataType::Float32 => {
             let b = builder.as_any_mut().downcast_mut::<arrow_array::Float32Builder>().unwrap();
             match expr {
+                Expr::UnaryOp {
+                    op : UnaryOperator::Minus,
+                    expr 
+                } => {
+                    match expr.as_ref() {
+                        Expr::Value(Value::Number(num, _)) => {
+                            let v : f32 = -num.parse()?;
+                            b.append_value(v);
+                        },
+                        _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?} to {:?}", expr, datatype)).into())
+                    }
+                },
                 Expr::Value(Value::Number(num, _)) => {
                     let v : f32 = num.parse()?;
                     b.append_value(v);
                 },
                 Expr::Value(Value::Null) => b.append_null(),
-                _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?}", expr)).into())
+                _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?} to {:?}", expr, datatype)).into())
             }
         },
         ArrowDataType::Float64 => {
             let b = builder.as_any_mut().downcast_mut::<arrow_array::Float64Builder>().unwrap();
             match expr {
+                Expr::UnaryOp {
+                    op : UnaryOperator::Minus,
+                    expr 
+                } => {
+                    match expr.as_ref() {
+                        Expr::Value(Value::Number(num, _)) => {
+                            let v : f64 = -num.parse()?;
+                            b.append_value(v);
+                        },
+                        _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?} to {:?}", expr, datatype)).into())
+                    }
+                },
                 Expr::Value(Value::Number(num, _)) => {
                     let v : f64 = num.parse()?;
                     b.append_value(v);
                 },
                 Expr::Value(Value::Null) => b.append_null(),
-                _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?}", expr)).into())
+                _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?} to {:?}", expr, datatype)).into())
             }
         },
 
@@ -103,13 +163,28 @@ pub fn append_value_to_builder(builder : &mut Box<dyn arrow_array::ArrayBuilder>
         ArrowDataType::Decimal128(precision, scale) => {
             let b = builder.as_any_mut().downcast_mut::<arrow_array::Decimal128Builder>().unwrap();
             match expr {
+                Expr::UnaryOp {
+                    op : UnaryOperator::Minus,
+                    expr 
+                } => {
+                    match expr.as_ref() {
+                        Expr::Value(Value::Number(num, _)) => {
+                            let mut num_str = String::with_capacity(num.len()+1);
+                            num_str.push('-');
+                            num_str.push_str(num);
+                            let v : i128 = parse_decimal::<Decimal128Type>(&num_str, precision.clone(), scale.clone())?;
+                            b.append_value(v);
+                        },
+                        _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?} to {:?}", expr, datatype)).into())
+                    }
+                },
                 Expr::Value(Value::Number(num, _)) => {
                     
                     let v : i128 = parse_decimal::<Decimal128Type>(num, precision.clone(), scale.clone())?;
                     b.append_value(v);
                 },
                 Expr::Value(Value::Null) => b.append_null(),
-                _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?}", expr)).into())
+                _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?} to {:?}", expr, datatype)).into())
             }
         }
 
@@ -120,7 +195,7 @@ pub fn append_value_to_builder(builder : &mut Box<dyn arrow_array::ArrayBuilder>
                     b.append_value(bool.clone());
                 },
                 Expr::Value(Value::Null) => b.append_null(),
-                _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?}", expr)).into())
+                _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?} to {:?}", expr, datatype)).into())
             }
         },
 
@@ -131,7 +206,7 @@ pub fn append_value_to_builder(builder : &mut Box<dyn arrow_array::ArrayBuilder>
                     b.append_value(v);
                 },
                 Expr::Value(Value::Null) => b.append_null(),
-                _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?}", expr)).into())
+                _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?} to {:?}", expr, datatype)).into())
             }
         }
         _ => {
