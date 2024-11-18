@@ -7,6 +7,29 @@ use sqlparser::ast::{Expr, UnaryOperator, Value};
 pub fn append_value_to_builder(builder : &mut Box<dyn arrow_array::ArrayBuilder>, datatype : &ArrowDataType, expr : &Expr) -> anyhow::Result<()> {
 
     match datatype {
+        ArrowDataType::Int8 => {
+            let b = builder.as_any_mut().downcast_mut::<arrow_array::Int8Builder>().unwrap();
+            match expr {
+                Expr::UnaryOp {
+                    op : UnaryOperator::Minus,
+                    expr 
+                } => {
+                    match expr.as_ref() {
+                        Expr::Value(Value::Number(num, _)) => {
+                            let v : i8 = -num.parse()?;
+                            b.append_value(v);
+                        },
+                        _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?} to {:?}", expr, datatype)).into())
+                    }
+                },
+                Expr::Value(Value::Number(num, _)) => {
+                    let v : i8 = num.parse()?;
+                    b.append_value(v);
+                },
+                Expr::Value(Value::Null) => b.append_null(),
+                _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?} to {:?}", expr, datatype)).into())
+            }
+        },
         //integer
         ArrowDataType::Int16 => {
             let b = builder.as_any_mut().downcast_mut::<arrow_array::Int16Builder>().unwrap();
@@ -71,6 +94,17 @@ pub fn append_value_to_builder(builder : &mut Box<dyn arrow_array::ArrayBuilder>
                 },
                 Expr::Value(Value::Number(num, _)) => {
                     let v : i64 = num.parse()?;
+                    b.append_value(v);
+                },
+                Expr::Value(Value::Null) => b.append_null(),
+                _ => return Err(arrow_schema::ArrowError::CastError(format!("not allowed Expr: {:?} to {:?}", expr, datatype)).into())
+            }
+        },
+        ArrowDataType::UInt8 => {
+            let b = builder.as_any_mut().downcast_mut::<arrow_array::UInt8Builder>().unwrap();
+            match expr {
+                Expr::Value(Value::Number(num, _)) => {
+                    let v : u8 = num.parse()?;
                     b.append_value(v);
                 },
                 Expr::Value(Value::Null) => b.append_null(),

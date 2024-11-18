@@ -2,6 +2,10 @@ use std::ops::Deref;
 
 use arrow::datatypes::DataType as ArrowDataType;
 
+//column_name, data_type
+pub type ColumnStrDef = (String, String);
+pub type ColumnArrStrDef = Vec<ColumnStrDef>;
+
 pub struct RowSchema(Vec<ArrowDataType>);
 
 impl RowSchema {
@@ -50,8 +54,8 @@ impl TryFrom<Vec<&str>> for RowSchema {
 
 fn is_allowed_datatype(dt : &ArrowDataType) -> bool {
     match dt {
-        ArrowDataType::Int16 | ArrowDataType::Int32 | ArrowDataType::Int64
-        | ArrowDataType::UInt16 | ArrowDataType::UInt32 | ArrowDataType::UInt64 => true,
+        ArrowDataType::Int8 | ArrowDataType::Int16 | ArrowDataType::Int32 | ArrowDataType::Int64
+        | ArrowDataType::UInt8 | ArrowDataType::UInt16 | ArrowDataType::UInt32 | ArrowDataType::UInt64 => true,
         
         ArrowDataType::Float32 | ArrowDataType::Float64 => true,
 
