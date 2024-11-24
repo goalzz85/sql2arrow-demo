@@ -82,9 +82,8 @@ impl IceBergPartition {
             }
 
             //get iceberg transform
-            if let Ok(tf) = transform_str.parse() {
-                col_transforms.push(tf);
-            }
+            let tf = transform_str.parse()?;
+            col_transforms.push(tf);
         }
 
         return Ok(IceBergPartition{
@@ -99,13 +98,14 @@ impl PartitionFunc for IceBergPartition {
     fn transform(&self, arr_refs : &Vec<ArrayRef>) -> anyhow::Result<Vec<ArrayRef>> {
         let mut res_arr_refs = Vec::<ArrayRef>::with_capacity(arr_refs.len());
 
-        for (idx, arr_ref) in arr_refs.iter().enumerate() {
-            if let Some(tf) = self.transforms.get(idx) {
+        for (i, col_idx) in self.col_idxs.iter().enumerate() {
+            if let Some(tf) = self.transforms.get(i) {
                 let func = create_transform_function(tf)?;
+                let arr_ref= arr_refs.get(col_idx.clone()).unwrap();
                 let res_arr_ref = func.transform(arr_ref.to_owned())?;
                 res_arr_refs.push(res_arr_ref);
             } else {
-                return Err(anyhow!("not found transform for idx {:?}", idx));
+                return Err(anyhow!("not found transform for col idx {:?}", col_idx));
             }
         }
         
@@ -118,6 +118,10 @@ pub fn get_parition_key_from_first_val(partition_val_arr_refs: &Vec<ArrayRef>) -
     let mut pk = Vec::<u8>::new();
 
     for arr_ref in partition_val_arr_refs {
+        if arr_ref.is_empty() {
+            return Err(anyhow!("get partition key with empty partition_val_arr_refs"));
+        }
+
         match arr_ref.data_type() {
             DataType::Int32 => {
                 let v = arr_ref.as_any().downcast_ref::<arrow::array::Int32Array>().unwrap().value(0);

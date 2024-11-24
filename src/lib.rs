@@ -2,9 +2,8 @@ mod types;
 mod arraybuilder;
 mod partition;
 
+
 use std::collections::HashMap;
-use std::f32::consts::E;
-use std::hash::Hash;
 use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
@@ -15,7 +14,7 @@ use arrow::compute::{SortColumn, TakeOptions};
 use arrow_array::UInt32Array;
 use mimalloc::MiMalloc;
 use partition::{get_parition_key_from_first_val, parse_partition_func, DefaultPartition, PartitionFunc, PartitionKey};
-use pyo3::prelude::*;
+use pyo3::{iter, prelude::*};
 use pyo3_arrow::error::PyArrowResult;
 use pyo3_arrow::{PyArray, PyChunkedArray};
 use sqlparser::dialect;
@@ -66,15 +65,27 @@ fn load_from_local(file_paths: Vec<String>, columns: ColumnArrStrDef, partition_
     }
     
     
-    if !is_have_partition {
-        return load_from_local_without_partition(file_paths, columns);
-    }
+    let res = if !is_have_partition {
+        match load_from_local_without_partition(file_paths, columns) {
+            Ok(pyarrs) => PyArrowResult::Ok(pyarrs),
+            Err(e) => Err(pyo3_arrow::error::PyArrowError::PyErr(
+                    pyo3::exceptions::PyRuntimeError::new_err(e.to_string())
+                )),
+        }
+    } else {
+        match load_with_partition_from_local(file_paths, columns, partition_func) {
+            Ok(pyarrs) => PyArrowResult::Ok(pyarrs),
+            Err(e) => Err(pyo3_arrow::error::PyArrowError::PyErr(
+                pyo3::exceptions::PyRuntimeError::new_err(e.to_string())
+            )),
+        }
+    };
 
-    todo!()
+    res
 }
 
 
-fn load_from_local_without_partition(file_paths: Vec<String>, columns: ColumnArrStrDef) -> PyArrowResult<Vec<Vec<PyArray>>> {
+fn load_from_local_without_partition(file_paths: Vec<String>, columns: ColumnArrStrDef) -> anyhow::Result<Vec<Vec<PyArray>>> {
     let (tx, rx) = crossbeam_channel::bounded::<anyhow::Result<(usize, Vec<ArrowArrayRef>)>>(file_paths.len());
 
     let mut handlers = Vec::with_capacity(file_paths.len());
@@ -130,9 +141,7 @@ fn load_from_local_without_partition(file_paths: Vec<String>, columns: ColumnArr
     }
     
     if res.is_err() {
-        return Err(pyo3_arrow::error::PyArrowError::PyErr(
-            pyo3::exceptions::PyRuntimeError::new_err(res.err().unwrap().to_string())
-        ));
+        return Err(res.err().unwrap());
     }
     
 
@@ -140,33 +149,21 @@ fn load_from_local_without_partition(file_paths: Vec<String>, columns: ColumnArr
 }
 
 
-fn load_with_partition_from_local(file_paths: Vec<String>, columns: ColumnArrStrDef,  partition_func : Arc<dyn PartitionFunc>) -> PyArrowResult<Vec<Vec<PyArray>>> {
-    let (tx, rx) = crossbeam_channel::bounded::<anyhow::Result<HashMap<PartitionKey, Vec<ArrowArrayRef>>>>(file_paths.len());
-
-    let mut handlers = Vec::with_capacity(file_paths.len());
-    let mut i : usize = 0;
-
-    fn get_sorted_indices_from_multi_cols(arr_refs : Vec<ArrowArrayRef>, cols : Vec<usize>) -> anyhow::Result<UInt32Array> {
-        let mut sort_cols = Vec::<SortColumn>::with_capacity(cols.len());
-        for idx in cols {
-            match arr_refs.get(idx) {
-                Some(arr_ref) => {
-                    let sort_col = SortColumn {
-                        values : arr_ref.clone(),
-                        options: None,
-                    };
-                    sort_cols.push(sort_col);
-                },
-                None => {
-                    return Err(anyhow!("col index {:?} not exists", idx));
-                }
-            }
+fn load_with_partition_from_local(file_paths: Vec<String>, columns: ColumnArrStrDef,  partition_func : Arc<dyn PartitionFunc>) -> anyhow::Result<Vec<Vec<PyArray>>> {
+    fn get_sorted_indices_from_multi_cols(arr_refs : &Vec<ArrowArrayRef>) -> anyhow::Result<UInt32Array> {
+        let mut sort_cols = Vec::<SortColumn>::with_capacity(arr_refs.len());
+        for arr_ref in arr_refs {
+            let sort_col = SortColumn {
+                values : arr_ref.clone(),
+                options: None,
+            };
+            sort_cols.push(sort_col);
         }
 
         return Ok(arrow::compute::lexsort_to_indices(&sort_cols, None)?);
     }
 
-    fn data_to_partitioned_arr_refs(arr_refs: Vec<ArrowArrayRef>, partition_val_arr_refs: Vec<ArrowArrayRef>, sorted_indices : UInt32Array) -> anyhow::Result<HashMap<PartitionKey, Vec<ArrowArrayRef>>> {
+    fn data_to_partitioned_arr_refs(arr_refs: &Vec<ArrowArrayRef>, partition_val_arr_refs: &Vec<ArrowArrayRef>, sorted_indices : &UInt32Array) -> anyhow::Result<HashMap<PartitionKey, Vec<ArrowArrayRef>>> {
         let take_opt = TakeOptions{check_bounds:true};
         let sorted_arr_refs = arrow::compute::take_arrays(&arr_refs, &sorted_indices, Some(take_opt.clone()))?;
         let sorted_partition_val_arr_refs = arrow::compute::take_arrays(&partition_val_arr_refs, &sorted_indices, Some(take_opt.clone()))?;
@@ -174,16 +171,18 @@ fn load_with_partition_from_local(file_paths: Vec<String>, columns: ColumnArrStr
 
         let mut res = HashMap::<PartitionKey, Vec<ArrowArrayRef>>::with_capacity(partitions.len());
 
-        for r in partitions.ranges() {
+        for (_, r) in partitions.ranges().iter().enumerate() {
+            
+
             let mut partitioned_arr_refs = Vec::<ArrowArrayRef>::with_capacity(sorted_arr_refs.len());
             for arr_ref in &sorted_arr_refs {
-                let partitioned_arr_ref = arr_ref.slice(r.start, r.end);
+                let partitioned_arr_ref = arr_ref.slice(r.start, r.end - r.start);
                 partitioned_arr_refs.push(partitioned_arr_ref);
             }
 
             let mut partitioned_val_arr_refs = Vec::<ArrowArrayRef>::with_capacity(sorted_partition_val_arr_refs.len());
             for arr_ref in &sorted_partition_val_arr_refs {
-                let partitioned_val_arr_ref = arr_ref.slice(r.start, r.end);
+                let partitioned_val_arr_ref = arr_ref.slice(r.start, r.end - r.start);
                 partitioned_val_arr_refs.push(partitioned_val_arr_ref);
             }
 
@@ -192,9 +191,16 @@ fn load_with_partition_from_local(file_paths: Vec<String>, columns: ColumnArrStr
             res.insert(partition_key, partitioned_arr_refs);
         }
 
+        
+
         return Ok(res);
     }
 
+
+    let (tx, rx) = crossbeam_channel::bounded::<anyhow::Result<HashMap<PartitionKey, Vec<ArrowArrayRef>>>>(file_paths.len());
+
+    let mut handlers = Vec::with_capacity(file_paths.len());
+    let mut i : usize = 0;
     for file_path in &file_paths {
         let tx_thread = tx.clone();
         let columns_thread = columns.clone();
@@ -204,17 +210,28 @@ fn load_with_partition_from_local(file_paths: Vec<String>, columns: ColumnArrStr
         i += 1;
 
         let handler = thread::spawn(move || {
-            match load_insert_sql_to_arrref(&file_path_thread, columns_thread, i_thread) {
-                Ok(arr_refs) => {
-                    match partition_func_thread.transform(&arr_refs) {
-                        Ok(partition_val_arr_refs) => {
-                            
 
-                        },
-                        Err(e) => {
-                            let _ = tx_thread.send(Err(e));
-                        }
-                    }
+            let res_for_send : anyhow::Result<HashMap<PartitionKey, Vec<ArrowArrayRef>>> = (move || {
+                let arr_refs = load_insert_sql_to_arrref(&file_path_thread, columns_thread, i_thread)?;
+
+                let mut is_debug = false;
+                match std::env::var("SQL2ARROW_DEBUG") {
+                    Ok(value) => is_debug = true,
+                    _ => {}
+                }
+                let partition_start_time = Instant::now();
+                let partition_val_arr_refs = partition_func_thread.transform(&arr_refs)?;
+                let indices = get_sorted_indices_from_multi_cols(&partition_val_arr_refs)?;
+                let ret = data_to_partitioned_arr_refs(&arr_refs, &partition_val_arr_refs, &indices);
+                if is_debug {
+                    print!("thread idx: {} partition. {:?}\n", i_thread, partition_start_time.elapsed());
+                }
+                ret
+            })();
+
+            match res_for_send {
+                Ok(hash_arr_refs) => {
+                    let _ = tx_thread.send(Ok(hash_arr_refs));
                 },
                 Err(e) => {
                     let _ = tx_thread.send(Err(e));
@@ -229,7 +246,68 @@ fn load_with_partition_from_local(file_paths: Vec<String>, columns: ColumnArrStr
     }
     drop(tx);
     
-    todo!()
+    let mut hash_arr_refs_batch = HashMap::<PartitionKey, Vec<Vec<ArrowArrayRef>>>::new();
+
+    let mut res = anyhow::Ok(());
+    for array_refs_res in rx {
+        match array_refs_res {
+            Ok(hash_arr_refs) => {
+                for (partition_key, arr_refs) in hash_arr_refs {
+                    if !hash_arr_refs_batch.contains_key(&partition_key) {
+                        let arr_refs_batch = Vec::<Vec<ArrowArrayRef>>::with_capacity(file_paths.len());
+                        hash_arr_refs_batch.insert(partition_key.clone(), arr_refs_batch);
+                    }
+                    let arr_refs_batch = hash_arr_refs_batch.get_mut(&partition_key).unwrap();
+                    arr_refs_batch.push(arr_refs);
+                }
+            },
+            Err(e) => {
+                res = Err(e);
+                break;
+            }
+        }
+    }
+
+    for handler in handlers {
+        let _ = handler.join();
+    }
+
+    if res.is_err() {
+        return Err(res.err().unwrap());
+    }
+
+    let mut is_debug = false;
+    match std::env::var("SQL2ARROW_DEBUG") {
+        Ok(value) => is_debug = true,
+        _ => {}
+    }
+
+    let combine_partition_start_time = Instant::now();
+
+    let mut ret_pyarrs = Vec::<Vec<PyArray>>::with_capacity(hash_arr_refs_batch.len());
+    for (_, arr_refs_batch) in &hash_arr_refs_batch {
+        let mut vertical_arr_refs = vec![Vec::<ArrowArrayRef>::with_capacity(hash_arr_refs_batch.len()); columns.len()];
+        for arr_refs in arr_refs_batch {
+            for (idx, arr_ref) in arr_refs.iter().enumerate() {
+                vertical_arr_refs.get_mut(idx).unwrap().push(arr_ref.clone());
+            }
+        }
+
+        let mut new_arr_refs = Vec::<PyArray>::with_capacity(columns.len());
+        for col_arr_refs in vertical_arr_refs {
+            let arr_refs_for_concat : Vec<&dyn Array> = col_arr_refs.iter().map(|arc| arc.as_ref()).collect();
+            let arr_ref = arrow::compute::concat(arr_refs_for_concat.as_slice())?;
+            new_arr_refs.push(PyArray::from_array_ref(arr_ref));
+        }
+
+        ret_pyarrs.push(new_arr_refs);
+    }
+    
+    if is_debug {
+        print!("combine partition. {:?}\n", combine_partition_start_time.elapsed());
+    }
+
+    return Ok(ret_pyarrs);
 }
 /**
  * columns

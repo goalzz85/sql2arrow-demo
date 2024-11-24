@@ -3,7 +3,7 @@ use arrow::{array as arrow_array, datatypes::Decimal128Type};
 use arrow::datatypes::DataType as ArrowDataType;
 use sqlparser::ast::{Expr, UnaryOperator, Value};
 
-
+#[inline(always)]
 pub fn append_value_to_builder(builder : &mut Box<dyn arrow_array::ArrayBuilder>, datatype : &ArrowDataType, expr : &Expr) -> anyhow::Result<()> {
 
     match datatype {
