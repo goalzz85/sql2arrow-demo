@@ -4,9 +4,13 @@ mod partition;
 
 
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::Read;
 use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
+
+use flate2::read::GzDecoder;
 
 use anyhow::{anyhow};
 use arrow::array::{Array, ArrayRef as ArrowArrayRef};
@@ -32,8 +36,8 @@ fn sql2arrow(m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 #[pyfunction]
-#[pyo3(signature = (file_paths, columns, partition_type=None, partition_confs=None))]
-fn load_from_local(file_paths: Vec<String>, columns: ColumnArrStrDef, partition_type : Option<&str>, partition_confs : Option<HashMap<String, String>>) ->  PyArrowResult<Vec<Vec<PyArray>>> {
+#[pyo3(signature = (file_paths, columns, is_gzip=false, partition_type=None, partition_confs=None))]
+fn load_from_local(file_paths: Vec<String>, columns: ColumnArrStrDef, is_gzip : bool, partition_type : Option<&str>, partition_confs : Option<HashMap<String, String>>) ->  PyArrowResult<Vec<Vec<PyArray>>> {
     if file_paths.is_empty() {
         return Err(pyo3_arrow::error::PyArrowError::PyErr(
             pyo3::exceptions::PyRuntimeError::new_err("file_paths is empty")
@@ -66,14 +70,14 @@ fn load_from_local(file_paths: Vec<String>, columns: ColumnArrStrDef, partition_
     
     
     let res = if !is_have_partition {
-        match load_from_local_without_partition(file_paths, columns) {
+        match load_from_local_without_partition(file_paths, columns, is_gzip) {
             Ok(pyarrs) => PyArrowResult::Ok(pyarrs),
             Err(e) => Err(pyo3_arrow::error::PyArrowError::PyErr(
                     pyo3::exceptions::PyRuntimeError::new_err(e.to_string())
                 )),
         }
     } else {
-        match load_with_partition_from_local(file_paths, columns, partition_func) {
+        match load_with_partition_from_local(file_paths, columns, partition_func, is_gzip) {
             Ok(pyarrs) => PyArrowResult::Ok(pyarrs),
             Err(e) => Err(pyo3_arrow::error::PyArrowError::PyErr(
                 pyo3::exceptions::PyRuntimeError::new_err(e.to_string())
@@ -85,7 +89,7 @@ fn load_from_local(file_paths: Vec<String>, columns: ColumnArrStrDef, partition_
 }
 
 
-fn load_from_local_without_partition(file_paths: Vec<String>, columns: ColumnArrStrDef) -> anyhow::Result<Vec<Vec<PyArray>>> {
+fn load_from_local_without_partition(file_paths: Vec<String>, columns: ColumnArrStrDef, is_gzip : bool) -> anyhow::Result<Vec<Vec<PyArray>>> {
     let (tx, rx) = crossbeam_channel::bounded::<anyhow::Result<(usize, Vec<ArrowArrayRef>)>>(file_paths.len());
 
     let mut handlers = Vec::with_capacity(file_paths.len());
@@ -98,7 +102,7 @@ fn load_from_local_without_partition(file_paths: Vec<String>, columns: ColumnArr
         i += 1;
 
         let handler = thread::spawn(move || {
-            match load_insert_sql_to_arrref(&file_path_thread, columns_thread, i_thread) {
+            match load_insert_sql_to_arrref(&file_path_thread, columns_thread, is_gzip, i_thread) {
                 Ok(arr_refs) => {
                     let _ = tx_thread.send(Ok((i_thread, arr_refs)));
                 },
@@ -149,7 +153,7 @@ fn load_from_local_without_partition(file_paths: Vec<String>, columns: ColumnArr
 }
 
 
-fn load_with_partition_from_local(file_paths: Vec<String>, columns: ColumnArrStrDef,  partition_func : Arc<dyn PartitionFunc>) -> anyhow::Result<Vec<Vec<PyArray>>> {
+fn load_with_partition_from_local(file_paths: Vec<String>, columns: ColumnArrStrDef,  partition_func : Arc<dyn PartitionFunc>, is_gzip : bool) -> anyhow::Result<Vec<Vec<PyArray>>> {
     fn get_sorted_indices_from_multi_cols(arr_refs : &Vec<ArrowArrayRef>) -> anyhow::Result<UInt32Array> {
         let mut sort_cols = Vec::<SortColumn>::with_capacity(arr_refs.len());
         for arr_ref in arr_refs {
@@ -212,7 +216,7 @@ fn load_with_partition_from_local(file_paths: Vec<String>, columns: ColumnArrStr
         let handler = thread::spawn(move || {
 
             let res_for_send : anyhow::Result<HashMap<PartitionKey, Vec<ArrowArrayRef>>> = (move || {
-                let arr_refs = load_insert_sql_to_arrref(&file_path_thread, columns_thread, i_thread)?;
+                let arr_refs = load_insert_sql_to_arrref(&file_path_thread, columns_thread, is_gzip, i_thread)?;
 
                 let mut is_debug = false;
                 match std::env::var("SQL2ARROW_DEBUG") {
@@ -315,7 +319,7 @@ fn load_with_partition_from_local(file_paths: Vec<String>, columns: ColumnArrStr
  *     index => (column_name,  data_type)
  * ]
  */
-fn load_insert_sql_to_arrref(file_path: &str, columns : ColumnArrStrDef, idx_thread : usize) -> anyhow::Result<Vec<ArrowArrayRef>> {
+fn load_insert_sql_to_arrref(file_path: &str, columns : ColumnArrStrDef, is_gzip : bool, idx_thread : usize) -> anyhow::Result<Vec<ArrowArrayRef>> {
     use std::env;
     let mut is_debug = false;
     match env::var("SQL2ARROW_DEBUG") {
@@ -338,68 +342,86 @@ fn load_insert_sql_to_arrref(file_path: &str, columns : ColumnArrStrDef, idx_thr
 
     let buffer_load_start_time = Instant::now();
     let row_schema : types::RowSchema = dt_vec.try_into()?;
-    let buffer = std::fs::read_to_string(file_path)?;
+    let buffer = if is_gzip {
+        let file = File::open(file_path)?;
+        let mut decoder = GzDecoder::new(file);
+        let mut buffer = String::new();
+        decoder.read_to_string(&mut buffer)?;
+
+        buffer
+    } else {
+        std::fs::read_to_string(file_path)?
+    };
+
     if is_debug {
         print!("thread idx: {} load buffer. {:?}\n", idx_thread, buffer_load_start_time.elapsed());
     }
 
 
-    let parse_sql_start_time = Instant::now();
     let dialect = dialect::MySqlDialect{};
-    let ast = sqlparser::parser::Parser::parse_sql(&dialect, &buffer)?;
-    drop(buffer);
-    if is_debug {
-        print!("thread idx: {} parse sql. {:?}\n", idx_thread, parse_sql_start_time.elapsed());
-    }
+    let mut sql_parser = sqlparser::parser::Parser::new(&dialect);
+    sql_parser = sql_parser.try_with_sql(&buffer)?;
     
-    //caculate the builder capacity
-    let mut capacity: usize = 0;
     let mut val_idx_to_outidx = HashMap::<usize, usize>::with_capacity(columns.len());
 
-    let build_arr_start_time = Instant::now();
-    for st in &ast {
-        match st {
-            Statement::Insert(Insert{source, columns, ..}) => {
-                if !columns.is_empty() {
-                    //match the column names
-                    let mut val_idx = 0;
-                    for col in columns {
-                        if column_name_to_outidx.contains_key(col.value.as_str()) {
-                            val_idx_to_outidx.insert(val_idx, column_name_to_outidx.get(col.value.as_str()).unwrap().clone());
-                            column_name_to_outidx.remove(col.value.as_str());
-                        }
-                        val_idx += 1;
-                    }
+    let mut expecting_statement_delimiter = false;
 
-                    if !column_name_to_outidx.is_empty() {
-                        let not_exists_columns_name : Vec<String> = column_name_to_outidx.keys().cloned().collect();
-                        return Err(anyhow!(format!("these columns: {} not exists", not_exists_columns_name.join(","))));
-                    }
-                } else {
-                    //Insert Into xxx VALUES(xxx,xxx)
-                    //no columns
-                    for (_, outidx) in column_name_to_outidx.iter() {
-                        val_idx_to_outidx.insert(outidx.clone(), outidx.clone());
-                    }
+    let mut builders = row_schema.create_row_array_builders(10000);
+    //loop statement
+    loop {
+        while sql_parser.consume_token(&sqlparser::tokenizer::Token::SemiColon) {
+            expecting_statement_delimiter = false;
+        }
+
+        match sql_parser.peek_token().token {
+            sqlparser::tokenizer::Token::EOF => break,
+
+            // end of statement
+            sqlparser::tokenizer::Token::Word(word) => {
+                if expecting_statement_delimiter && word.keyword == sqlparser::keywords::Keyword::END {
+                    break;
                 }
+            }
+            _ => {}
+        }
 
-                match source.as_ref().unwrap().body.as_ref() {
-                    SetExpr::Values(Values{  rows, .. }) => {
-                        capacity += rows.len();
-                    },
-                    _ => (),
-                };
-            },
-            _ => (),
-        };
+        if expecting_statement_delimiter {
+            return sql_parser.expected("end of statement", sql_parser.peek_token())?;
+        }
+
+        let statement = sql_parser.parse_statement()?;
+        if val_idx_to_outidx.is_empty() {
+            match &statement {
+                Statement::Insert(Insert{columns, ..}) => {
+                    if !columns.is_empty() {
+                        //match the column names
+                        let mut val_idx = 0;
+                        for col in columns {
+                            if column_name_to_outidx.contains_key(col.value.as_str()) {
+                                val_idx_to_outidx.insert(val_idx, column_name_to_outidx.get(col.value.as_str()).unwrap().clone());
+                                column_name_to_outidx.remove(col.value.as_str());
+                            }
+                            val_idx += 1;
+                        }
+    
+                        if !column_name_to_outidx.is_empty() {
+                            let not_exists_columns_name : Vec<String> = column_name_to_outidx.keys().cloned().collect();
+                            return Err(anyhow!(format!("these columns: {} not exists", not_exists_columns_name.join(","))));
+                        }
+                    } else {
+                        //Insert Into xxx VALUES(xxx,xxx)
+                        //no columns
+                        for (_, outidx) in column_name_to_outidx.iter() {
+                            val_idx_to_outidx.insert(outidx.clone(), outidx.clone());
+                        }
+                    }
+                },
+                _ => (),
+            }
+        }
+
         
-    }
-
-
-    let mut builders = row_schema.create_row_array_builders(capacity);
-
-    for st in ast {
-        match st {
+        match statement {
             Statement::Insert(Insert{source, ..}) => {
                 match source.as_ref().unwrap().body.as_ref() {
                     SetExpr::Values(Values{  rows, .. }) => {
@@ -417,23 +439,13 @@ fn load_insert_sql_to_arrref(file_path: &str, columns : ColumnArrStrDef, idx_thr
                 };
             },
             _ => (),
-        };
-    }
-    
-    if is_debug {
-        print!("thread idx: {} build arr. {:?}\n", idx_thread, build_arr_start_time.elapsed());
-    }
+        }
+    } //end of loop
 
-    let builder_finish_start_time = Instant::now();
     let mut arrays = Vec::<ArrowArrayRef>::with_capacity(builders.len());
-    
     for mut b in builders {
         let arr_ref = b.finish();
         arrays.push(arr_ref);
-    }
-
-    if is_debug {
-        print!("thread idx: {} builder finish. {:?}\n", idx_thread, builder_finish_start_time.elapsed());
     }
 
     Ok(arrays)
